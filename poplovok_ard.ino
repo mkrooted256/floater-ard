@@ -9,10 +9,12 @@ enum State {
 };
 
 State globalState = ST_SETUP;
-SensorUpdateTime handledImpulseTime{0,0};
 
-// Changed in interrupts
+// Modified by interrupts
 volatile SensorUpdateTime lastImpulseTime{0,0};
+volatile SensorUpdateTime lastHandledImpulseTime{0,0};
+volatile bool upperSensorFlag = false;
+volatile bool lowerSensorFlag = false;
 
 // Initialization
 void setup_inputs() {
@@ -30,37 +32,53 @@ void setup_inputs() {
 
 // Interrupts
 void lowerSensorISR() {
-    lastImpulseTime.lower_sensor = millis();
+    const unsigned long now = millis();
+    // Raise flag unless already raised recently.
+    if (now - lastHandledImpulseTime.lower_sensor > SENSOR_DEBOUNCING_TIME) 
+    {
+        lowerSensorFlag = true;
+        lastHandledImpulseTime.lower_sensor = now;
+    }
+    // Always update last impulse time
+    lastImpulseTime.lower_sensor = now;
 }
 void upperSensorISR() {
-    lastImpulseTime.upper_sensor = millis();
+    const unsigned long now = millis();
+    // Raise flag unless already raised recently.
+    if (now - lastHandledImpulseTime.upper_sensor > SENSOR_DEBOUNCING_TIME) 
+    {
+        upperSensorFlag = true;
+        lastHandledImpulseTime.upper_sensor = now;
+    }
+    // Always update last impulse time
+    lastImpulseTime.upper_sensor = now;
 }
 
 // Main
 void setup() {
     setup_inputs();
     
-    log(Log::LOG, F("Hello"));
+    info(F("Hello"));
 
-    log(Log::LOG, F("Setting up interrupts"));
+    info(F("Setting up interrupts"));
     // FALLING because inputs configured as input_pullup, default state is HIGH, and impulse is LOW.
     attachInterrupt(digitalPinToInterrupt(PIN_LOWER_SENSOR), lowerSensorISR, FALLING);
     attachInterrupt(digitalPinToInterrupt(PIN_UPPER_SENSOR), upperSensorISR, FALLING);
     
-    log(Log::LOG, F("Ready"));
+    info(F("Ready"));
     globalState = ST_IDLING;
 }
 
 void applyState(State newState) {
     if (globalState == ST_PUMPING && newState == ST_IDLING) {
-        log(Log::LOG, F("ST_PUMPING -> ST_IDLING"));
-        log(Log::LOG, F("stop pump"));
+        info(F("ST_PUMPING -> ST_IDLING"));
+        info(F("stop pump"));
         digitalWrite(PIN_PUMP, PUMP_OFF);
         digitalWrite(PIN_STATUSLED, LOW);
     }
     if (globalState == ST_IDLING && newState == ST_PUMPING) {
-        log(Log::LOG, F("ST_IDLING -> ST_PUMPING"));
-        log(Log::LOG, F("run pump"));
+        info(F("ST_IDLING -> ST_PUMPING"));
+        info(F("run pump"));
         digitalWrite(PIN_PUMP, PUMP_ON);
         digitalWrite(PIN_STATUSLED, HIGH);
     }
@@ -69,21 +87,29 @@ void applyState(State newState) {
 }
 
 void loop() {
+    char lowerVal = digitalRead(PIN_LOWER_SENSOR) == HIGH ? '1' : '0';
+    char upperVal = digitalRead(PIN_UPPER_SENSOR) == HIGH ? '1' : '0';
+    verbose(((String(F("l,u = ")) + lowerVal) + ',') + upperVal);
+
     if (globalState == ST_IDLING) 
     {
-        if (lastImpulseTime.upper_sensor != handledImpulseTime.upper_sensor) 
+        if (upperSensorFlag) 
         {
+            info(String(F("Handling upper impulse. t")) + (String(lastImpulseTime.upper_sensor, DEC) + F(" h")) + String(lastHandledImpulseTime.upper_sensor, DEC));
             applyState(ST_PUMPING);
-            handledImpulseTime.upper_sensor = lastImpulseTime.upper_sensor;
+            upperSensorFlag = false;
+            lowerSensorFlag = false;
         }
     } 
     else
     if (globalState == ST_PUMPING) 
     {
-        if (lastImpulseTime.lower_sensor != handledImpulseTime.lower_sensor) 
+        if (lowerSensorFlag)
         {
+            info(String(F("Handling lower impulse. t")) + (String(lastImpulseTime.lower_sensor, DEC) + F(" h")) + String(lastHandledImpulseTime.lower_sensor, DEC));
             applyState(ST_IDLING);
-            handledImpulseTime.lower_sensor = lastImpulseTime.lower_sensor;
+            upperSensorFlag = false;
+            lowerSensorFlag = false;
         }
     }
 
